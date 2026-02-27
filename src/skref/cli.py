@@ -26,6 +26,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .backends.local import LocalBackend
+from .backends.nextcloud import NextcloudBackend
 from .config import load_config, save_config
 from .models import BackendType, VaultConfig
 from .vault import Vault
@@ -56,9 +57,31 @@ def _resolve_vault(vault_name: str | None) -> Vault:
 
     if vcfg.backend == BackendType.LOCAL:
         backend = LocalBackend(Path(vcfg.path))
+    elif vcfg.backend == BackendType.NEXTCLOUD:
+        import os
+
+        url = vcfg.url or os.environ.get("SKREF_NEXTCLOUD_URL", "")
+        user = os.environ.get("SKREF_NEXTCLOUD_USER", "")
+        password = os.environ.get("SKREF_NEXTCLOUD_PASS", "")
+        vault_path = os.environ.get("SKREF_NEXTCLOUD_PATH", vcfg.path or "/skref/")
+
+        missing = [k for k, v in [("URL", url), ("user", user), ("password", password)] if not v]
+        if missing:
+            console.print(
+                f"[red]Nextcloud backend requires: {', '.join(missing)}.[/]\n"
+                "  Set SKREF_NEXTCLOUD_URL, SKREF_NEXTCLOUD_USER, SKREF_NEXTCLOUD_PASS."
+            )
+            sys.exit(1)
+
+        try:
+            backend = NextcloudBackend(
+                url=url, username=user, password=password, vault_path=vault_path
+            )
+        except ValueError as exc:
+            console.print(f"[red]Nextcloud backend error:[/] {exc}")
+            sys.exit(1)
     else:
         console.print(f"[red]Backend '{vcfg.backend.value}' not yet implemented.[/]")
-        console.print("  Phase 1 supports 'local' only. Nextcloud/S3 coming soon.")
         sys.exit(1)
 
     return Vault(config=vcfg, backend=backend)
@@ -396,6 +419,170 @@ def save_auth_key_cmd(key: str):
             "    capauth init\n"
             "  Then try again."
         )
+
+
+@main.command()
+@click.option("--vault", "vault_name", default=None, help="Vault name.")
+@click.option("--url", default=None, help="Nextcloud URL (or SKREF_NEXTCLOUD_URL).")
+@click.option("--user", default=None, help="Nextcloud username (or SKREF_NEXTCLOUD_USER).")
+@click.option("--password", default=None, help="Nextcloud password (or SKREF_NEXTCLOUD_PASS).")
+@click.option("--path", "vault_path", default=None,
+              help="Remote vault path (or SKREF_NEXTCLOUD_PATH, default /skref/).")
+def sync(vault_name: str | None, url: str | None, user: str | None,
+         password: str | None, vault_path: str | None):
+    """Sync local vault with Nextcloud.
+
+    Compares what exists locally vs. remotely and reports the sync state.
+    Use 'skref remote pull' to fetch specific refs.
+    """
+    import os
+
+    url = url or os.environ.get("SKREF_NEXTCLOUD_URL", "")
+    user = user or os.environ.get("SKREF_NEXTCLOUD_USER", "")
+    password = password or os.environ.get("SKREF_NEXTCLOUD_PASS", "")
+    vault_path = vault_path or os.environ.get("SKREF_NEXTCLOUD_PATH", "/skref/")
+
+    if not all([url, user, password]):
+        console.print(
+            "[red]Nextcloud credentials required.[/]\n"
+            "  Set SKREF_NEXTCLOUD_URL, SKREF_NEXTCLOUD_USER, SKREF_NEXTCLOUD_PASS\n"
+            "  or pass --url, --user, --password."
+        )
+        sys.exit(1)
+
+    try:
+        nc = NextcloudBackend(url=url, username=user, password=password,
+                              vault_path=vault_path)
+    except ValueError as exc:
+        console.print(f"[red]Nextcloud backend error:[/] {exc}")
+        sys.exit(1)
+
+    console.print(f"\n  Checking connection to [cyan]{url}[/]...")
+    health = nc.health()
+    if not health["ok"]:
+        console.print(f"  [red]Connection failed.[/] {health.get('error', '')}")
+        sys.exit(1)
+
+    console.print(f"  [green]Connected[/] as {user}")
+    status = nc.sync_status()
+    console.print(
+        Panel(
+            f"Remote refs:  {status['remote_ref_count']}\n"
+            f"Sync status:  {status['status']}",
+            title=f"SKRef Sync — {vault_path}",
+            border_style="green",
+        )
+    )
+    console.print()
+
+
+@main.group()
+def remote():
+    """Interact with the Nextcloud remote vault."""
+
+
+@remote.command("list")
+@click.option("--url", default=None, help="Nextcloud URL.")
+@click.option("--user", default=None, help="Nextcloud username.")
+@click.option("--password", default=None, help="Nextcloud password.")
+@click.option("--path", "vault_path", default=None, help="Remote vault path.")
+@click.option("--prefix", default="", help="Filter by path prefix.")
+def remote_list(url: str | None, user: str | None, password: str | None,
+                vault_path: str | None, prefix: str):
+    """List refs on Nextcloud."""
+    import os
+
+    url = url or os.environ.get("SKREF_NEXTCLOUD_URL", "")
+    user = user or os.environ.get("SKREF_NEXTCLOUD_USER", "")
+    password = password or os.environ.get("SKREF_NEXTCLOUD_PASS", "")
+    vault_path = vault_path or os.environ.get("SKREF_NEXTCLOUD_PATH", "/skref/")
+
+    if not all([url, user, password]):
+        console.print("[red]Nextcloud credentials required.[/]")
+        sys.exit(1)
+
+    try:
+        nc = NextcloudBackend(url=url, username=user, password=password,
+                              vault_path=vault_path)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        sys.exit(1)
+
+    refs = nc.list_refs(prefix=prefix)
+
+    if not refs:
+        console.print(f"\n  [dim]No refs found under {vault_path}{prefix}[/]\n")
+        return
+
+    table = Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
+    table.add_column("Ref ID")
+    table.add_column("Title")
+    table.add_column("Tags")
+    table.add_column("Size", justify="right")
+
+    for r in refs:
+        tags = ", ".join(r.get("tags", [])) if r.get("tags") else ""
+        table.add_row(
+            r.get("ref_id", ""),
+            r.get("title", "[dim]—[/]"),
+            tags or "[dim]—[/]",
+            _human_size(r.get("size", 0)),
+        )
+
+    console.print()
+    console.print(table)
+    console.print()
+
+
+@remote.command("pull")
+@click.argument("ref_id")
+@click.option("--url", default=None, help="Nextcloud URL.")
+@click.option("--user", default=None, help="Nextcloud username.")
+@click.option("--password", default=None, help="Nextcloud password.")
+@click.option("--path", "vault_path", default=None, help="Remote vault path.")
+@click.option("--dest", default=None,
+              help="Local destination path. Defaults to current directory.")
+def remote_pull(ref_id: str, url: str | None, user: str | None, password: str | None,
+                vault_path: str | None, dest: str | None):
+    """Pull a specific ref from Nextcloud and save it locally.
+
+    The file is downloaded as-is (still encrypted if the vault is encrypted).
+    Use 'skref open' to decrypt and open a locally stored ref.
+    """
+    import os
+
+    url = url or os.environ.get("SKREF_NEXTCLOUD_URL", "")
+    user = user or os.environ.get("SKREF_NEXTCLOUD_USER", "")
+    password = password or os.environ.get("SKREF_NEXTCLOUD_PASS", "")
+    vault_path = vault_path or os.environ.get("SKREF_NEXTCLOUD_PATH", "/skref/")
+
+    if not all([url, user, password]):
+        console.print("[red]Nextcloud credentials required.[/]")
+        sys.exit(1)
+
+    try:
+        nc = NextcloudBackend(url=url, username=user, password=password,
+                              vault_path=vault_path)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        sys.exit(1)
+
+    try:
+        content, metadata = nc.get_ref(ref_id)
+    except FileNotFoundError:
+        console.print(f"[red]Ref not found on Nextcloud:[/] {ref_id}")
+        sys.exit(1)
+
+    filename = Path(ref_id).name
+    out_path = Path(dest or ".") / filename
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_bytes(content)
+
+    title = metadata.get("title", "")
+    console.print(
+        f"  [green]Pulled:[/] {ref_id} → {out_path}"
+        + (f"  [dim]({title})[/]" if title else "")
+    )
 
 
 def _human_size(n: int) -> str:

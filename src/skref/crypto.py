@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import platform
 import shutil
 import subprocess
 from pathlib import Path
@@ -20,6 +21,38 @@ from typing import Optional
 logger = logging.getLogger("skref.crypto")
 
 ENCRYPTED_SUFFIX = ".gpg"
+
+# Cache the gpg binary path after first detection
+_gpg_path: Optional[str] = None
+
+
+def _find_gpg() -> Optional[str]:
+    """Find the gpg binary, including Gpg4win default location on Windows.
+
+    Returns:
+        Path to gpg executable, or None if not found.
+    """
+    global _gpg_path
+    if _gpg_path is not None:
+        return _gpg_path
+
+    # Check PATH first
+    found = shutil.which("gpg")
+    if found:
+        _gpg_path = found
+        return found
+
+    # On Windows, check Gpg4win default install locations
+    if platform.system() == "Windows":
+        for gpg4win_path in [
+            Path(r"C:\Program Files (x86)\GnuPG\bin\gpg.exe"),
+            Path(r"C:\Program Files\GnuPG\bin\gpg.exe"),
+        ]:
+            if gpg4win_path.exists():
+                _gpg_path = str(gpg4win_path)
+                return _gpg_path
+
+    return None
 
 
 def detect_key(identity_home: Optional[Path] = None) -> Optional[str]:
@@ -47,11 +80,12 @@ def detect_key(identity_home: Optional[Path] = None) -> Optional[str]:
 
 def _detect_from_keyring() -> Optional[str]:
     """Fall back to gpg keyring for fingerprint detection."""
-    if not shutil.which("gpg"):
+    gpg = _find_gpg()
+    if not gpg:
         return None
     try:
         result = subprocess.run(
-            ["gpg", "--list-secret-keys", "--keyid-format", "long", "--with-colons"],
+            [gpg, "--list-secret-keys", "--keyid-format", "long", "--with-colons"],
             capture_output=True, text=True, timeout=10,
         )
         for line in result.stdout.splitlines():
@@ -80,8 +114,9 @@ def encrypt_bytes(
     Raises:
         RuntimeError: If GPG is not installed or encryption fails.
     """
-    if not shutil.which("gpg"):
-        raise RuntimeError("gpg not found on PATH")
+    gpg = _find_gpg()
+    if not gpg:
+        raise RuntimeError("gpg not found on PATH or in Gpg4win default locations")
 
     all_recipients = [recipient]
     if extra_recipients:
@@ -93,7 +128,7 @@ def encrypt_bytes(
 
     result = subprocess.run(
         [
-            "gpg", "--batch", "--yes", "--trust-model", "always",
+            gpg, "--batch", "--yes", "--trust-model", "always",
             "--encrypt", *recipient_args,
         ],
         input=plaintext,
@@ -118,11 +153,12 @@ def decrypt_bytes(ciphertext: bytes) -> bytes:
     Raises:
         RuntimeError: If GPG is not installed or decryption fails.
     """
-    if not shutil.which("gpg"):
-        raise RuntimeError("gpg not found on PATH")
+    gpg = _find_gpg()
+    if not gpg:
+        raise RuntimeError("gpg not found on PATH or in Gpg4win default locations")
 
     result = subprocess.run(
-        ["gpg", "--batch", "--yes", "--decrypt"],
+        [gpg, "--batch", "--yes", "--decrypt"],
         input=ciphertext,
         capture_output=True,
         timeout=30,

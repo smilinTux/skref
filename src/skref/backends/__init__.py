@@ -9,5 +9,6 @@ from __future__ import annotations
 
 from .base import Backend, FileEntry
 from .local import LocalBackend
+from .nextcloud import NextcloudBackend, NextcloudError
 
-__all__ = ["Backend", "FileEntry", "LocalBackend"]
+__all__ = ["Backend", "FileEntry", "LocalBackend", "NextcloudBackend", "NextcloudError"]
