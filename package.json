@@ -1,0 +1,27 @@
+{
+  "name": "@smilintux/skref",
+  "version": "0.1.0",
+  "description": "SKRef - Sovereign encrypted reference vaults with FUSE mount, GPG-at-rest, and multi-backend support.",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "keywords": [
+    "skref",
+    "reference",
+    "vault",
+    "encrypted",
+    "knowledge",
+    "fuse",
+    "sovereign",
+    "gpg"
+  ],
+  "author": "smilinTux <chefboyrdave2.1@gmail.com>",
+  "license": "GPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/smilinTux/skref.git"
+  },
+  "homepage": "https://github.com/smilinTux/skref",
+  "bugs": {
+    "url": "https://github.com/smilinTux/skref/issues"
+  }
+}
