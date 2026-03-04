@@ -102,3 +102,14 @@ class Backend(ABC):
             Size in bytes, or 0 if unknown/missing.
         """
         return 0
+
+    def is_dir(self, rel_path: str) -> bool:
+        """Check if a path is a directory.
+
+        Args:
+            rel_path: Relative path.
+
+        Returns:
+            True if the path is a directory.
+        """
+        return False

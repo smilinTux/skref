@@ -242,46 +242,82 @@ def mount(mountpoint: str, vault_name: str | None, foreground: bool):
     Files are decrypted on read and encrypted on write. The mountpoint
     never has plaintext on real disk.
 
-    Requires: pip install skref[fuse]
-    Linux: sudo apt install fuse3 libfuse3-dev
-    macOS: install macFUSE
+    Linux/macOS: pip install skref[fuse]
+    Windows:     pip install skref[windows]  (requires WinFsp)
     """
-    from .fuse_mount import check_fuse_available, mount_vault
+    if platform.system() == "Windows":
+        from .fuse_windows import check_winfsp_available, mount_vault_windows
 
-    if not check_fuse_available():
+        if not check_winfsp_available():
+            console.print(
+                Panel(
+                    "[bold red]WinFsp not available.[/]\n\n"
+                    "Install the Windows FUSE dependency:\n"
+                    "  1. Download and install WinFsp:\n"
+                    "     [cyan]https://winfsp.dev/rel/[/]\n"
+                    "  2. Install winfspy:\n"
+                    "     [cyan]pip install skref[windows][/]",
+                    title="WinFsp required",
+                    border_style="red",
+                )
+            )
+            sys.exit(1)
+
+        vault = _resolve_vault(vault_name)
+
+        console.print()
         console.print(
             Panel(
-                "[bold red]FUSE not available.[/]\n\n"
-                "Install the FUSE dependency:\n"
-                "  [cyan]pip install skref[fuse][/]\n\n"
-                "System packages:\n"
-                "  Linux:  sudo apt install fuse3 libfuse3-dev\n"
-                "  Arch:   sudo pacman -S fuse3\n"
-                "  macOS:  brew install macfuse (or osxfuse.github.io)",
-                title="FUSE required",
-                border_style="red",
+                f"Mounting vault [bold]{vault.config.name}[/]\n\n"
+                f"  Drive/Path: {mountpoint}\n"
+                f"  Encrypted:  {'yes' if vault.encrypted else 'no'}\n"
+                f"  Backend:    {vault.config.backend.value}\n\n"
+                "  [dim]Files decrypt on read, encrypt on write.\n"
+                "  Ctrl-C to unmount.[/]",
+                title="SKRef WinFsp",
+                border_style="green",
             )
         )
-        sys.exit(1)
+        console.print()
 
-    vault = _resolve_vault(vault_name)
+        mount_vault_windows(vault, mountpoint, foreground=foreground)
+    else:
+        from .fuse_mount import check_fuse_available, mount_vault
 
-    console.print()
-    console.print(
-        Panel(
-            f"Mounting vault [bold]{vault.config.name}[/]\n\n"
-            f"  Mountpoint: {mountpoint}\n"
-            f"  Encrypted:  {'yes' if vault.encrypted else 'no'}\n"
-            f"  Backend:    {vault.config.backend.value}\n\n"
-            "  [dim]Files decrypt on read, encrypt on write.\n"
-            "  Ctrl-C or 'umount' to stop.[/]",
-            title="SKRef FUSE",
-            border_style="green",
+        if not check_fuse_available():
+            console.print(
+                Panel(
+                    "[bold red]FUSE not available.[/]\n\n"
+                    "Install the FUSE dependency:\n"
+                    "  [cyan]pip install skref[fuse][/]\n\n"
+                    "System packages:\n"
+                    "  Linux:  sudo apt install fuse3 libfuse3-dev\n"
+                    "  Arch:   sudo pacman -S fuse3\n"
+                    "  macOS:  brew install macfuse (or osxfuse.github.io)",
+                    title="FUSE required",
+                    border_style="red",
+                )
+            )
+            sys.exit(1)
+
+        vault = _resolve_vault(vault_name)
+
+        console.print()
+        console.print(
+            Panel(
+                f"Mounting vault [bold]{vault.config.name}[/]\n\n"
+                f"  Mountpoint: {mountpoint}\n"
+                f"  Encrypted:  {'yes' if vault.encrypted else 'no'}\n"
+                f"  Backend:    {vault.config.backend.value}\n\n"
+                "  [dim]Files decrypt on read, encrypt on write.\n"
+                "  Ctrl-C or 'umount' to stop.[/]",
+                title="SKRef FUSE",
+                border_style="green",
+            )
         )
-    )
-    console.print()
+        console.print()
 
-    mount_vault(vault, mountpoint, foreground=foreground)
+        mount_vault(vault, mountpoint, foreground=foreground)
 
 
 @main.command()
@@ -290,19 +326,40 @@ def mount(mountpoint: str, vault_name: str | None, foreground: bool):
 @click.option("--port", default=8443, type=int, help="Port number.")
 @click.option("--user", default=None, help="Basic auth username (or SKREF_WEBDAV_USER env).")
 @click.option("--password", default=None, help="Basic auth password (or SKREF_WEBDAV_PASS env).")
+@click.option("--token", default=None, help="CapAuth Bearer token (or SKREF_WEBDAV_TOKEN env).")
+@click.option("--tls-cert", "tls_cert", default=None, help="TLS certificate file.")
+@click.option("--tls-key", "tls_key", default=None, help="TLS private key file.")
 @click.option("--tailscale/--no-tailscale", default=False,
               help="Expose via Tailscale Funnel (auto TLS, global FQDN).")
 def serve(vault_name: str | None, host: str, port: int, user: str | None,
-          password: str | None, tailscale: bool):
+          password: str | None, token: str | None, tls_cert: str | None,
+          tls_key: str | None, tailscale: bool):
     """Start a WebDAV proxy server for a vault.
 
     Access your encrypted vault from any device with a WebDAV client
     (phone, tablet, remote desktop). Files decrypt on read, encrypt on write.
 
+    Authentication: Basic Auth (--user/--password) or CapAuth Bearer token
+    (--token or SKREF_WEBDAV_TOKEN env var).
+
     With --tailscale: exposes the server via Tailscale Funnel with a valid
     HTTPS certificate and a globally-routable FQDN. No port forwarding,
     no self-signed certs, no dynamic DNS.
     """
+    try:
+        from .webdav import WebDAVProxy
+    except ImportError:
+        console.print(
+            Panel(
+                "[bold red]aiohttp not installed.[/]\n\n"
+                "Install the WebDAV dependency:\n"
+                "  [cyan]pip install skref[webdav][/]",
+                title="WebDAV requires aiohttp",
+                border_style="red",
+            )
+        )
+        sys.exit(1)
+
     from . import tailscale as ts_mod
 
     vault = _resolve_vault(vault_name)
@@ -346,7 +403,7 @@ def serve(vault_name: str | None, host: str, port: int, user: str | None,
         ts_mod.serve_background(port)
         ts_mod.enable_funnel(port)
 
-        console.print(f"  [bold]Phone setup:[/]")
+        console.print("  [bold]Phone setup:[/]")
         console.print(f"    WebDAV URL: [cyan]https://{fqdn}:443/[/]")
         if user:
             console.print(f"    Username:   {user}")
@@ -369,15 +426,29 @@ def serve(vault_name: str | None, host: str, port: int, user: str | None,
         )
         console.print()
 
-    console.print(f"  [dim]WebDAV proxy running on http://{host}:{port}/[/]")
-    console.print(f"  [dim]Press Ctrl-C to stop.[/]\n")
+    scheme = "https" if (tls_cert and tls_key) else "http"
+    console.print(f"  [dim]WebDAV proxy running on {scheme}://{host}:{port}/[/]")
+    console.print("  [dim]Press Ctrl-C to stop.[/]\n")
 
-    # Phase 4 TODO: replace with actual WebDAV server (webdav_proxy.py)
-    console.print(
-        "[yellow]WebDAV server not yet implemented (Phase 4).[/]\n"
-        "  The Tailscale integration is ready — the proxy is the next piece.\n"
-        "  See docs/phases/PHASE-4.md for the full agent spec."
-    )
+    try:
+        proxy = WebDAVProxy(
+            vault=vault,
+            host=host,
+            port=port,
+            username=user,
+            password=password,
+            token=token,
+            tls_cert=tls_cert,
+            tls_key=tls_key,
+        )
+    except ValueError as exc:
+        console.print(f"[red]Configuration error:[/] {exc}")
+        sys.exit(1)
+
+    try:
+        proxy.run()
+    except KeyboardInterrupt:
+        console.print("\n  [dim]Stopped.[/]")
 
 
 @main.command()

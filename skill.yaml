@@ -1,0 +1,30 @@
+name: skref
+version: "0.1.0"
+description: >
+  Sovereign reference vault — encrypted knowledge base with FUSE mount,
+  remote sync, and version control. Store, retrieve, and share reference
+  materials across agent instances with PGP-encrypted storage.
+
+author:
+  name: smilinTux.org
+  email: hello@smilintux.org
+
+tags: [reference, vault, encrypted, knowledge, fuse, sync]
+category: core
+
+tools:
+  - name: ref_put
+    description: Store a file or content in the reference vault
+    entrypoint: skref.skill:put
+
+  - name: ref_get
+    description: Retrieve a reference by path
+    entrypoint: skref.skill:get
+
+  - name: ref_list
+    description: List references in the vault
+    entrypoint: skref.skill:list_refs
+
+  - name: ref_search
+    description: Search reference content
+    entrypoint: skref.skill:search

@@ -127,3 +127,11 @@ class LocalBackend(Backend):
         """
         target = self._resolve(rel_path)
         return target.stat().st_size if target.is_file() else 0
+
+    def is_dir(self, rel_path: str) -> bool:
+        """Check if a path is a directory.
+
+        Args:
+            rel_path: Relative path.
+        """
+        return self._resolve(rel_path).is_dir()

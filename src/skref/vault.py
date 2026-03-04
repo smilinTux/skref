@@ -151,3 +151,11 @@ class Vault:
         if self.encrypted:
             return self.backend.file_size(encrypted_name(rel_path))
         return self.backend.file_size(rel_path)
+
+    def is_dir(self, rel_path: str) -> bool:
+        """Check if a path is a directory.
+
+        Args:
+            rel_path: Relative path (directories are never encrypted).
+        """
+        return self.backend.is_dir(rel_path)
