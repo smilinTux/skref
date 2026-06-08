@@ -1,8 +1,19 @@
 # SKRef — Sovereign Encrypted Reference Vaults
 
-**FUSE-mounted, GPG-encrypted file vaults that sit on any backend. Your CapAuth PGP key is the only thing that unlocks them.**
+[![PyPI version](https://img.shields.io/pypi/v/skref.svg)](https://pypi.org/project/skref/)
+[![npm version](https://img.shields.io/npm/v/@smilintux/skref.svg)](https://www.npmjs.com/package/@smilintux/skref)
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.html)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-brightgreen.svg)](https://www.python.org/)
 
-Mount a folder. Browse files normally. On disk (and on the cloud backend) it's all ciphertext. Decrypt-on-read, encrypt-on-write. Transparent. Sovereign.
+**FUSE-mounted, GPG-encrypted file vaults that sit on any backend. Your CapAuth PGP key is the
+only thing that unlocks them.**
+
+SKRef is the Tier-3 reference-storage layer of the `skcapstone` sovereign-computing stack. Every
+file is GPG-encrypted before it touches a backend — local disk, Nextcloud, S3, or anything else —
+then surfaced through a standard FUSE filesystem so every application reads and writes without
+knowing encryption exists. Decrypt-on-read, encrypt-on-write: transparent to your apps, opaque to
+everyone else. Vaults are named and independently configured; a WebDAV proxy (`skref serve`) plus
+optional Tailscale Funnel gives phone and remote access with auto TLS and no port forwarding.
 
 ```
 You see:                        Backend stores:
@@ -15,113 +26,413 @@ You see:                        Backend stores:
     └── banana-bread.md             └── banana-bread.md.gpg
 ```
 
-Part of the **skcapstone** three-tier storage model:
+---
 
-| Tier | Purpose | Size | Phone? |
-|------|---------|------|--------|
-| **1** `~/.skcapstone/sync/` | Auth seeds (identity, trust) | ~2-5 MB | Always |
-| **2** `~/.skcapstone/gtd/` | GTD task lists | ~100 KB | Optional |
-| **3** SKRef vaults | Reference material, docs, files | Unbounded | Via WebDAV proxy |
+## Install
+
+```bash
+# Core CLI (local vaults, GPG encryption)
+pip install skref
+
+# With FUSE mount support (Linux / macOS)
+pip install "skref[fuse]"
+
+# With FUSE mount support (Windows — requires WinFsp)
+pip install "skref[windows]"
+
+# With Nextcloud / WebDAV backend
+pip install "skref[nextcloud]"
+
+# With WebDAV proxy server (serve vault to phone / remote devices)
+pip install "skref[webdav]"
+
+# Everything
+pip install "skref[all]"
+```
+
+```bash
+# npm wrapper (sovereign skills ecosystem)
+npm install @smilintux/skref
+```
+
+### System FUSE packages
+
+| OS | Command |
+|----|---------|
+| Debian / Ubuntu | `sudo apt install fuse3 libfuse3-dev` |
+| Arch / Manjaro | `sudo pacman -S fuse3` |
+| macOS | install [macFUSE](https://osxfuse.github.io/) |
+| Windows | install [WinFsp](https://winfsp.dev/rel/) |
 
 ---
 
-## Quick start
+## Architecture
+
+```mermaid
+flowchart TD
+    User["User / Application"]
+
+    subgraph CLI["skref CLI  (click + rich)"]
+        CMDinit["skref init"]
+        CMDput["skref put"]
+        CMDopen["skref open"]
+        CMDmount["skref mount"]
+        CMDserve["skref serve"]
+        CMDsync["skref sync\nskref remote list/pull"]
+        CMDsetup["skref setup"]
+    end
+
+    subgraph Core["Core Layer"]
+        Vault["Vault\n(encrypt / decrypt abstraction)"]
+        Crypto["Crypto\n(GPG via CapAuth PGP key)"]
+        Config["Config\n(~/.skcapstone/vaults.yaml)"]
+        Resolver["Resolver\n(picks fastest endpoint:\nlocal → tailnet → funnel → cloud)"]
+    end
+
+    subgraph FUSE["FUSE Layer"]
+        FS["_SkrefFS\n(pyfuse3 on Linux/macOS\nwinfspy on Windows)"]
+        Tmpfs["tmpfs open\n(plaintext only in /run/user/<uid>/\nnever written to real disk)"]
+    end
+
+    subgraph Backends["Storage Backends"]
+        Local["LocalBackend\n(local disk / NAS / USB)"]
+        NC["NextcloudBackend\n(WebDAV, .meta.json sidecars)"]
+        S3["S3Backend\n(planned — boto3)"]
+        GDrive["GDriveBackend\n(planned)"]
+    end
+
+    subgraph Remote["Remote Access"]
+        WebDAV["WebDAV Proxy\n(aiohttp — skref serve)"]
+        Tailscale["Tailscale Funnel\n(global HTTPS, Let's Encrypt TLS)"]
+        Phone["Phone / Tablet\n(any WebDAV client)"]
+    end
+
+    User -->|"browse encrypted folder"| FUSE
+    User --> CLI
+
+    CMDmount --> FS
+    CMDopen --> Tmpfs
+    CMDput --> Vault
+    CMDserve --> WebDAV
+    CMDsetup --> Config
+
+    FS --> Vault
+    Tmpfs --> Vault
+    Vault --> Crypto
+    Vault --> Config
+    Vault --> Resolver
+    Resolver --> Backends
+
+    WebDAV --> Vault
+    WebDAV --> Tailscale
+    Tailscale --> Phone
+
+    Local -->|".gpg files"| Disk[(Local Disk)]
+    NC -->|".gpg files +\n.meta.json sidecars"| Cloud[(Nextcloud)]
+    S3 -->|".gpg files"| S3store[(S3 / MinIO)]
+```
+
+---
+
+## Features
+
+- **GPG encryption at rest** — every file is encrypted with your CapAuth PGP key before storage;
+  backends only ever hold ciphertext
+- **FUSE mount** — `skref mount` presents an encrypted vault as a normal directory; any application
+  works transparently (`skref[fuse]` on Linux/macOS via pyfuse3, `skref[windows]` on Windows via
+  WinFsp/winfspy)
+- **Multiple backends** — local disk, Nextcloud/WebDAV, S3/MinIO (planned), Google Drive (planned);
+  swap backends without re-encrypting
+- **Tmpfs open** — `skref open` decrypts directly into `/run/user/<uid>/skref-tmp/` (Linux tmpfs)
+  so plaintext is never written to a spinning disk or SSD even temporarily
+- **WebDAV proxy server** — `skref serve` exposes a vault over WebDAV with Basic Auth or CapAuth
+  Bearer token; files decrypt on read, encrypt on write
+- **Tailscale Funnel integration** — `skref serve --tailscale` publishes the proxy at a valid
+  Let's Encrypt HTTPS URL with no port forwarding and no self-signed certificates
+- **Interactive setup wizard** — `skref setup` guides through datastore, Tailscale, Funnel, and
+  vault creation; second devices auto-join the tailnet via a GPG-encrypted synced auth key
+- **Nextcloud sync** — `skref sync` checks connection health and reports remote ref count;
+  `skref remote list/pull` browse and fetch individual refs
+- **Metadata sidecars** — Nextcloud backend stores a `.meta.json` file alongside each encrypted
+  payload so listing and searching (`title`, `tags`) never require decryption
+- **Multi-vault** — any number of named vaults in a single config, each with its own backend,
+  encryption key, peers, and endpoint list
+- **Peer encryption** — add PGP fingerprints to `peers` to encrypt to additional recipients
+- **Device registry** — `skref setup` publishes this device's vault endpoints to the sovereign
+  registry so other devices can discover and resolve the fastest path
+- **Path traversal guard** — LocalBackend rejects paths that escape the vault root
+
+---
+
+## Usage
+
+### Initial setup
 
 ```bash
-# Install
-pip install -e skref/
+# Guided wizard — configures vault, Tailscale, Funnel, registry
+skref setup
 
-# Initialize a vault
-skref init --name personal --encrypted
+# Non-interactive (CI / scripts)
+skref setup --non-interactive
 
-# Store a file (GPG-encrypts to your CapAuth key)
-skref put ~/Documents/contract.pdf --vault personal
+# Re-run just the remote access part
+skref setup --remote
 
-# List vault contents (shows plaintext names)
+# Manual vault creation
+skref init --name personal --path ~/.skcapstone/vaults/personal --encrypted
+```
+
+### Store and retrieve files
+
+```bash
+# Encrypt and store a file in the default vault
+skref put ~/Documents/contract.pdf
+
+# Store to a named vault
+skref put report.pdf --vault personal
+
+# Store at a specific path inside the vault
+skref put report.pdf --vault personal --dest legal/2025/report.pdf
+
+# List vault root
 skref ls --vault personal
 
-# Open a file (decrypts to tmpfs, opens with default viewer, cleans up)
-skref open contract.pdf --vault personal
+# List a sub-directory
+skref ls legal/ --vault personal
 
-# FUSE mount — the good stuff (requires pip install skref[fuse])
-skref mount ~/vault --vault personal
-# Now: ls ~/vault/  → see your files
-#       xdg-open ~/vault/contract.pdf  → decrypts on the fly
-#       cp newfile.pdf ~/vault/  → encrypts and stores
-#       Ctrl-C or umount ~/vault  → done, no plaintext on disk
+# Open a file — decrypts to tmpfs, launches default viewer, cleans up after close
+skref open legal/contract.pdf --vault personal
 ```
 
-## FUSE mount requirements
+### FUSE mount
 
 ```bash
-# Python dependency
-pip install skref[fuse]
+# Mount (foreground — Ctrl-C to unmount)
+skref mount ~/vault --vault personal
 
-# Linux
-sudo apt install fuse3 libfuse3-dev     # Debian/Ubuntu
-sudo pacman -S fuse3                     # Arch/Manjaro
+# Browse, edit, copy freely — crypto is invisible
+ls ~/vault/
+xdg-open ~/vault/legal/contract.pdf   # decrypts on the fly
+cp newfile.pdf ~/vault/health/         # encrypts on write
+rm ~/vault/recipes/old.md              # deletes from backend
 
-# macOS
-# Install macFUSE: https://osxfuse.github.io/
+# Unmount
+umount ~/vault
+# or: fusermount -u ~/vault
+# or: Ctrl-C in the terminal running skref mount
 ```
 
-## Vault config
+### WebDAV proxy (phone / remote access)
 
-Stored at `~/.skcapstone/vaults.yaml`:
+```bash
+# Local-only WebDAV (Basic Auth)
+skref serve --vault personal --host 127.0.0.1 --port 8443 \
+            --user alice --password secret
+
+# CapAuth Bearer token instead of password
+skref serve --vault personal --token "$CAPAUTH_TOKEN"
+# or via environment:  SKREF_WEBDAV_TOKEN=<token>
+
+# TLS with your own certificate
+skref serve --vault personal \
+            --tls-cert /etc/ssl/certs/skref.pem \
+            --tls-key  /etc/ssl/private/skref.key
+
+# Expose globally via Tailscale Funnel (auto TLS, no port forwarding)
+skref serve --vault personal --tailscale
+```
+
+Configure your WebDAV client (FolderSync, Solid Explorer, DAVx⁵, etc.):
+
+```
+URL:      https://<hostname>.tail1234.ts.net:443/
+Username: alice
+Password: (--password value or SKREF_WEBDAV_PASS env var)
+```
+
+### Nextcloud sync
+
+```bash
+# Set credentials once
+export SKREF_NEXTCLOUD_URL=https://cloud.example.com
+export SKREF_NEXTCLOUD_USER=alice
+export SKREF_NEXTCLOUD_PASS=app-token   # Nextcloud app password
+
+# Check sync status
+skref sync
+
+# List remote refs, filter by prefix
+skref remote list
+skref remote list --prefix legal/
+
+# Pull a specific ref to current directory
+skref remote pull legal/contract.pdf.gpg
+
+# Pull to a named destination
+skref remote pull legal/contract.pdf.gpg --dest ~/Downloads/
+```
+
+### Tailscale auth key management
+
+```bash
+# Save a manually created reusable auth key (GPG-encrypted, syncs via Syncthing)
+skref save-auth-key tskey-auth-XXXXXX...
+# On the next device, skref setup detects and uses this key automatically —
+# no browser login needed.
+```
+
+---
+
+## Skill / MCP Tools
+
+SKRef exposes the following tools via `skill.yaml` for use by sovereign agents:
+
+| Tool | Entrypoint | Description |
+|------|-----------|-------------|
+| `ref_put` | `skref.skill:put` | Store a file or content in the reference vault |
+| `ref_get` | `skref.skill:get` | Retrieve a reference by path |
+| `ref_list` | `skref.skill:list_refs` | List references in the vault |
+| `ref_search` | `skref.skill:search` | Search reference content by title or tags |
+
+---
+
+## Configuration
+
+Config lives at `~/.skcapstone/vaults.yaml`, created by `skref init` / `skref setup`.
 
 ```yaml
 default_vault: personal
+
+device:
+  hostname: mybox
+  device_id: a1b2c3d4
+  is_datastore: true
+  tailscale_fqdn: mybox.tail1234.ts.net
+  tailscale_ip: 100.64.0.1
+  funnel_enabled: true
+  funnel_port: 8443
+
 vaults:
   personal:
-    backend: local
+    backend: local                          # local | nextcloud | s3 | gdrive
     path: "~/.skcapstone/vaults/personal"
     encrypted: true
-    key: auto           # uses CapAuth PGP key
-    peers: []           # add peer fingerprints for shared vaults
+    key: auto                               # auto = CapAuth PGP key
+    peers: []                               # extra PGP fingerprints
+    role: origin                            # origin | replica | client
+    endpoints:
+      - kind: local
+        url: "~/.skcapstone/vaults/personal"
+        device: mybox
+        priority: 10
+      - kind: tailnet
+        url: "http://100.64.0.1:8443/personal/"
+        device: mybox
+        priority: 20
+      - kind: funnel
+        url: "https://mybox.tail1234.ts.net/personal/"
+        device: mybox
+        priority: 30
 
-  shared:
-    backend: local
-    path: "/mnt/nas/shared-vault"
-    encrypted: false    # team-readable without keys
+  cloud:
+    backend: nextcloud
+    url: "https://cloud.example.com"
+    path: /skref/
+    encrypted: true
+    key: auto
+
+serve:
+  host: 127.0.0.1
+  port: 8443
+  tailscale_funnel: true
+  tailscale_serve: true
 ```
 
-## Encrypted vs. unencrypted
+### Environment variables
 
-Each vault independently chooses:
+| Variable | Purpose |
+|----------|---------|
+| `SKREF_NEXTCLOUD_URL` | Nextcloud instance base URL |
+| `SKREF_NEXTCLOUD_USER` | Nextcloud WebDAV username |
+| `SKREF_NEXTCLOUD_PASS` | Nextcloud WebDAV password or app token |
+| `SKREF_NEXTCLOUD_PATH` | Remote vault path (default: `/skref/`) |
+| `SKREF_WEBDAV_USER` | WebDAV proxy Basic Auth username |
+| `SKREF_WEBDAV_PASS` | WebDAV proxy Basic Auth password |
+| `SKREF_WEBDAV_TOKEN` | CapAuth Bearer token for WebDAV proxy |
 
-- **Encrypted (default):** Files stored as `.gpg` on the backend. Only your PGP key (and authorized peer keys) can read them. Safe to put on any cloud — Nextcloud, S3, Google Drive — they see ciphertext only.
-- **Unencrypted:** Plaintext storage. For shared/public/non-sensitive content. No crypto overhead.
+### Vault config fields
 
-## Backends (Phase 1: local, more coming)
+| Field | Default | Description |
+|-------|---------|-------------|
+| `backend` | `local` | Storage backend: `local`, `nextcloud`, `s3`, `gdrive` |
+| `path` | — | Local directory path or remote vault sub-path |
+| `url` | — | Backend base URL (Nextcloud instance root) |
+| `encrypted` | `true` | GPG-encrypt files at rest |
+| `key` | `auto` | GPG fingerprint, or `auto` to use the CapAuth key |
+| `peers` | `[]` | Additional PGP fingerprints to encrypt to |
+| `role` | `origin` | Device role: `origin`, `replica`, or `client` |
+| `endpoints` | `[]` | Ordered list of endpoints; resolver picks the lowest priority value |
 
-| Backend | Status | Use case |
-|---------|--------|----------|
-| **local** | Done | Local disk, USB, NAS mount |
-| **nextcloud** | Planned | WebDAV to Nextcloud/ownCloud |
-| **s3** | Planned | AWS S3 / MinIO / any S3-compatible |
-| **gdrive** | Planned | Google Drive API |
+### skcapstone three-tier model
 
-The backend is dumb storage — just put/get bytes. The crypto layer is independent. Once you encrypt, the backend doesn't matter.
+| Tier | Directory | Purpose | Typical size |
+|------|-----------|---------|------|
+| 1 | `~/.skcapstone/sync/` | Identity seeds, trust anchors, auth keys | ~2–5 MB |
+| 2 | `~/.skcapstone/gtd/` | GTD task lists, inbox | ~100 KB |
+| 3 | SKRef vaults | Reference material, documents, files | Unbounded |
 
-## How it works
+---
+
+## Contributing / Development
+
+```bash
+# Clone and install in editable mode with all dev extras
+git clone https://github.com/smilinTux/skref.git
+cd skref
+pip install -e ".[dev,fuse,nextcloud,webdav]"
+
+# Run tests
+pytest
+
+# Lint
+ruff check src/
+
+# Format
+black src/
+```
+
+### Project layout
 
 ```
-   skref mount ~/vault --vault personal
-         │
-         ▼
-   ┌─────────────┐
-   │  FUSE layer  │  ← You see plaintext files here
-   └──────┬──────┘
-          │
-   ┌──────▼──────┐
-   │   Vault      │  ← Encrypts on write, decrypts on read
-   └──────┬──────┘
-          │
-   ┌──────▼──────┐
-   │   Backend    │  ← Stores .gpg ciphertext (local / cloud)
-   └─────────────┘
+src/skref/
+├── cli.py            # Click CLI — all user-facing commands
+├── vault.py          # Vault class: read / write / list with crypto
+├── crypto.py         # GPG encrypt / decrypt, CapAuth key detection
+├── config.py         # Load / save ~/.skcapstone/vaults.yaml
+├── models.py         # Pydantic config models (VaultConfig, SkrefConfig, …)
+├── fuse_mount.py     # pyfuse3 FUSE filesystem (Linux / macOS)
+├── fuse_windows.py   # winfspy FUSE filesystem (Windows / WinFsp)
+├── setup_wizard.py   # Interactive skref setup wizard
+├── tailscale.py      # Tailscale install, auth, Serve / Funnel helpers
+├── registry.py       # Vault registry publish / resolve
+├── resolver.py       # Multi-endpoint vault resolver
+├── webdav.py         # aiohttp WebDAV proxy server
+└── backends/
+    ├── base.py       # Abstract Backend + FileEntry dataclass
+    ├── local.py      # Local filesystem backend (path-traversal guarded)
+    └── nextcloud.py  # Nextcloud WebDAV backend (.meta.json sidecars)
 ```
+
+### Adding a backend
+
+1. Create `src/skref/backends/mybackend.py` implementing all methods of `Backend`
+   (`put`, `get`, `delete`, `list_dir`, `exists`, `mkdir` — see `backends/base.py`).
+2. Add `MYBACKEND = "mybackend"` to the `BackendType` enum in `models.py`.
+3. Instantiate it in `cli.py:_resolve_vault()` for the new enum value.
+4. Add an optional dependency to `pyproject.toml` under `[project.optional-dependencies]`.
+
+---
 
 ## License
 
-GPL-3.0-or-later — Free as in freedom.
+GPL-3.0-or-later — Free as in freedom. See [LICENSE](LICENSE) for details.
